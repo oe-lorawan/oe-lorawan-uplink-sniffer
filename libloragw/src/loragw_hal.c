@@ -229,11 +229,11 @@ int load_firmware(uint8_t target, uint8_t *firmware, uint16_t size) {
 void lgw_constant_adjust(void) {
 
     /* I/Q path setup */
-    // lgw_reg_w(LGW_RX_INVERT_IQ,0); /* default 0 */
+    //lgw_reg_w(LGW_RX_INVERT_IQ,0); /* default 0 */
     // lgw_reg_w(LGW_MODEM_INVERT_IQ,1); /* default 1 */
     // lgw_reg_w(LGW_CHIRP_INVERT_RX,1); /* default 1 */
     // lgw_reg_w(LGW_RX_EDGE_SELECT,0); /* default 0 */
-    // lgw_reg_w(LGW_MBWSSF_MODEM_INVERT_IQ,0); /* default 0 */
+    //lgw_reg_w(LGW_MBWSSF_MODEM_INVERT_IQ,0); /* default 0 */
     // lgw_reg_w(LGW_DC_NOTCH_EN,1); /* default 1 */
     lgw_reg_w(LGW_RSSI_BB_FILTER_ALPHA,6); /* default 7 */
     lgw_reg_w(LGW_RSSI_DEC_FILTER_ALPHA,7); /* default 5 */
@@ -811,7 +811,7 @@ int lgw_start(void) {
     lgw_reg_w(LGW_DBG_AGC_MCU_RAM_ADDR, FW_VERSION_ADDR);
     lgw_reg_r(LGW_DBG_AGC_MCU_RAM_DATA, &read_val);
     fw_version = (uint8_t)read_val;
-    if (fw_version != FW_VERSION_CAL) {
+    if (fw_version != FW_VERSION_CAL && fw_version != 1) {
         printf("ERROR: Version of calibration firmware not expected, actual:%d expected:%d\n", fw_version, FW_VERSION_CAL);
         return -1;
     }
@@ -1765,3 +1765,4 @@ uint32_t lgw_time_on_air(struct lgw_pkt_tx_s *packet) {
 }
 
 /* --- EOF ------------------------------------------------------------------ */
+

@@ -53,7 +53,7 @@ Maintainer: Sylvain Miermont
 
 #define READ_ACCESS     0x00
 #define WRITE_ACCESS    0x80
-#define SPI_SPEED       8000000
+#define SPI_SPEED       2000000
 #define SPI_DEV_PATH    "/dev/spidev0.0"
 //#define SPI_DEV_PATH    "/dev/spidev32766.0"
 
@@ -383,3 +383,4 @@ int lgw_spi_rb(void *spi_target, uint8_t spi_mux_mode, uint8_t spi_mux_target, u
 }
 
 /* --- EOF ------------------------------------------------------------------ */
+

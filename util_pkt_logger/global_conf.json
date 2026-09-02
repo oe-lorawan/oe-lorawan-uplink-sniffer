@@ -2,6 +2,8 @@
     "SX1301_conf": {
         "lorawan_public": true,
         "clksrc": 1, /* radio_1 provides clock to concentrator */
+	"com_type": "SPI",
+        "com_path": "/dev/spidev0.0",
         "radio_0": {
             "enable": true,
             "type": "SX1257",
@@ -82,6 +84,7 @@
         }
     },
     "gateway_conf": {
-        "gateway_ID": "AA555A0000000000"
+        "gateway_ID": "2e76b17a0f712728"
     }
 }
+

@@ -37,6 +37,47 @@ Maintainer: Sylvain Miermont
 #include "parson.h"
 #include "loragw_hal.h"
 
+
+/* --- START JSON HELPER FUNCTIONS --- */
+// Base64 Encoding Table
+static char encoding_table[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+                                'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+                                'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
+                                'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
+                                'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
+                                'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
+                                'w', 'x', 'y', 'z', '0', '1', '2', '3',
+                                '4', '5', '6', '7', '8', '9', '+', '/'};
+static int mod_table[] = {0, 2, 1};
+
+// Function to encode raw bytes to Base64 string
+void base64_encode(const unsigned char *data,
+                    size_t input_length,
+                    char *encoded_data) {
+
+    size_t output_length = 4 * ((input_length + 2) / 3);
+    
+    for (size_t i = 0, j = 0; i < input_length;) {
+        uint32_t octet_a = i < input_length ? (unsigned char)data[i++] : 0;
+        uint32_t octet_b = i < input_length ? (unsigned char)data[i++] : 0;
+        uint32_t octet_c = i < input_length ? (unsigned char)data[i++] : 0;
+
+        uint32_t triple = (octet_a << 0x10) + (octet_b << 0x08) + octet_c;
+
+        encoded_data[j++] = encoding_table[(triple >> 3 * 6) & 0x3F];
+        encoded_data[j++] = encoding_table[(triple >> 2 * 6) & 0x3F];
+        encoded_data[j++] = encoding_table[(triple >> 1 * 6) & 0x3F];
+        encoded_data[j++] = encoding_table[(triple >> 0 * 6) & 0x3F];
+    }
+
+    for (int i = 0; i < mod_table[input_length % 3]; i++)
+        encoded_data[output_length - 1 - i] = '=';
+    
+    encoded_data[output_length] = '\0';
+}
+/* --- END JSON HELPER FUNCTIONS --- */
+
+
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE MACROS ------------------------------------------------------- */
 
@@ -340,29 +381,29 @@ int parse_gateway_configuration(const char * conf_file) {
     return 0;
 }
 
+
+
+/*----------------------------------------------------- MODIFIED LOGGING FUNCTION TO SAVE AS JSONL ---------------------------------------------------- */
+
 void open_log(void) {
-    int i;
     char iso_date[20];
 
     strftime(iso_date,ARRAY_SIZE(iso_date),"%Y%m%dT%H%M%SZ",gmtime(&now_time)); /* format yyyymmddThhmmssZ */
     log_start_time = now_time; /* keep track of when the log was started, for log rotation */
 
-    sprintf(log_file_name, "pktlog_%s_%s.csv", lgwm_str, iso_date);
-    log_file = fopen(log_file_name, "a"); /* create log file, append if file already exist */
+    sprintf(log_file_name, "pktlog_%s_%s.jsonl", lgwm_str, iso_date);
+    log_file = fopen(log_file_name, "a");
     if (log_file == NULL) {
         MSG("ERROR: impossible to create log file %s\n", log_file_name);
-        exit(EXIT_FAILURE);
-    }
-
-    i = fprintf(log_file, "\"gateway ID\",\"node MAC\",\"UTC timestamp\",\"us count\",\"frequency\",\"RF chain\",\"RX chain\",\"status\",\"size\",\"modulation\",\"bandwidth\",\"datarate\",\"coderate\",\"RSSI\",\"SNR\",\"payload\"\n");
-    if (i < 0) {
-        MSG("ERROR: impossible to write to log file %s\n", log_file_name);
         exit(EXIT_FAILURE);
     }
 
     MSG("INFO: Now writing to log file %s\n", log_file_name);
     return;
 }
+
+/*----------------------------------------------------- END OF MODIFIED LOGGING FUNCTION TO SAVE AS JSONL ---------------------------------------------------- */
+
 
 /* describe command line options */
 void usage(void) {
@@ -489,108 +530,170 @@ int main(int argc, char **argv)
             sprintf(fetch_timestamp,"%04i-%02i-%02i %02i:%02i:%02i.%03liZ",(x->tm_year)+1900,(x->tm_mon)+1,x->tm_mday,x->tm_hour,x->tm_min,x->tm_sec,(fetch_time.tv_nsec)/1000000); /* ISO 8601 format */
         }
 
-        /* log packets */
+
+/* log packets */
         for (i=0; i < nb_pkt; ++i) {
             p = &rxpkt[i];
 
-            /* writing gateway ID */
-            fprintf(log_file, "\"%08X%08X\",", (uint32_t)(lgwm >> 32), (uint32_t)(lgwm & 0xFFFFFFFF));
+	/* --- SKIP DOWNLINKS (FILTER) --- */
 
-            /* writing node MAC address */
-            fputs("\"\",", log_file); // TODO: need to parse payload
+	// Downlink Types: 1 (Join Accept), 3 (Unconf Down), 5 (Conf Down)
 
-            /* writing UTC timestamp*/
-            fprintf(log_file, "\"%s\",", fetch_timestamp);
-            // TODO: replace with GPS time when available
+	    uint8_t m_type = (p->payload[0] >> 5) & 0x07;
+          if (m_type == 1 || m_type == 3 || m_type == 5) {
+		if (p->modulation == MOD_LORA) {
+                  continue;
+		}
+          }
+            /* ------------------------------- */
 
-            /* writing internal clock */
-            fprintf(log_file, "%10u,", p->count_us);
 
-            /* writing RX frequency */
-            fprintf(log_file, "%10u,", p->freq_hz);
+            /* --- PREPARE DATA FOR JSON --- */
 
-            /* writing RF chain */
-            fprintf(log_file, "%u,", p->rf_chain);
-
-            /* writing RX modem/IF chain */
-            fprintf(log_file, "%2d,", p->if_chain);
-
-            /* writing status */
-            switch(p->status) {
-                case STAT_CRC_OK:       fputs("\"CRC_OK\" ,", log_file); break;
-                case STAT_CRC_BAD:      fputs("\"CRC_BAD\",", log_file); break;
-                case STAT_NO_CRC:       fputs("\"NO_CRC\" ,", log_file); break;
-                case STAT_UNDEFINED:    fputs("\"UNDEF\"  ,", log_file); break;
-                default:                fputs("\"ERR\"    ,", log_file);
-            }
-
-            /* writing payload size */
-            fprintf(log_file, "%3u,", p->size);
-
-            /* writing modulation */
-            switch(p->modulation) {
-                case MOD_LORA:  fputs("\"LORA\",", log_file); break;
-                case MOD_FSK:   fputs("\"FSK\" ,", log_file); break;
-                default:        fputs("\"ERR\" ,", log_file);
-            }
-
-            /* writing bandwidth */
-            switch(p->bandwidth) {
-                case BW_500KHZ:     fputs("500000,", log_file); break;
-                case BW_250KHZ:     fputs("250000,", log_file); break;
-                case BW_125KHZ:     fputs("125000,", log_file); break;
-                case BW_62K5HZ:     fputs("62500 ,", log_file); break;
-                case BW_31K2HZ:     fputs("31200 ,", log_file); break;
-                case BW_15K6HZ:     fputs("15600 ,", log_file); break;
-                case BW_7K8HZ:      fputs("7800  ,", log_file); break;
-                case BW_UNDEFINED:  fputs("0     ,", log_file); break;
-                default:            fputs("-1    ,", log_file);
-            }
-
-            /* writing datarate */
-            if (p->modulation == MOD_LORA) {
-                switch (p->datarate) {
-                    case DR_LORA_SF7:   fputs("\"SF7\"   ,", log_file); break;
-                    case DR_LORA_SF8:   fputs("\"SF8\"   ,", log_file); break;
-                    case DR_LORA_SF9:   fputs("\"SF9\"   ,", log_file); break;
-                    case DR_LORA_SF10:  fputs("\"SF10\"  ,", log_file); break;
-                    case DR_LORA_SF11:  fputs("\"SF11\"  ,", log_file); break;
-                    case DR_LORA_SF12:  fputs("\"SF12\"  ,", log_file); break;
-                    default:            fputs("\"ERR\"   ,", log_file);
-                }
-            } else if (p->modulation == MOD_FSK) {
-                fprintf(log_file, "\"%6u\",", p->datarate);
+            // 1. Get Timestamp (YY-MM-DD HH:MM:SS.mmm)
+            char time_str[30];
+            if (x != NULL) {
+                // Calculate milliseconds from nanoseconds
+                long ms = fetch_time.tv_nsec / 1000000;
+                // Format: YY-MM-DD HH:MM:SS.mmm
+                sprintf(time_str, "%02i-%02i-%02i %02i:%02i:%02i.%03li",
+                        (x->tm_year) % 100,
+                        x->tm_mon + 1,
+                        x->tm_mday,
+                        x->tm_hour,
+                        x->tm_min,
+                        x->tm_sec,
+                        ms);
             } else {
-                fputs("\"ERR\"   ,", log_file);
+                sprintf(time_str, "00-00-00 00:00:00.000");
             }
 
-            /* writing coderate */
-            switch (p->coderate) {
-                case CR_LORA_4_5:   fputs("\"4/5\",", log_file); break;
-                case CR_LORA_4_6:   fputs("\"2/3\",", log_file); break;
-                case CR_LORA_4_7:   fputs("\"4/7\",", log_file); break;
-                case CR_LORA_4_8:   fputs("\"1/2\",", log_file); break;
-                case CR_UNDEFINED:  fputs("\"\"   ,", log_file); break;
-                default:            fputs("\"ERR\",", log_file);
+
+
+            /*char time_str[30];
+            if (x != NULL) {
+                strftime(time_str, sizeof(time_str), "%y-%m-%d %H:%M:%S", x);
+            } else {
+                sprintf(time_str, "00-00-00 00:00:00");
+            }*/
+
+            // 2. Encode Payload to Base64 (Requires helper function from previous step)
+            char b64_payload[350]; 
+            base64_encode(p->payload, p->size, b64_payload);
+
+            // 3. Map Bandwidth
+            int bw_hz = 0;
+            switch(p->bandwidth) {
+                case BW_125KHZ: bw_hz = 125000; break;
+                case BW_250KHZ: bw_hz = 250000; break;
+                case BW_500KHZ: bw_hz = 500000; break;
+                default: bw_hz = 0;
             }
 
-            /* writing packet RSSI */
-            fprintf(log_file, "%+.0f,", p->rssi);
-
-            /* writing packet average SNR */
-            fprintf(log_file, "%+5.1f,", p->snr);
-
-            /* writing hex-encoded payload (bundled in 32-bit words) */
-            fputs("\"", log_file);
-            for (j = 0; j < p->size; ++j) {
-                if ((j > 0) && (j%4 == 0)) fputs("-", log_file);
-                fprintf(log_file, "%02X", p->payload[j]);
+            // 4. Map CodeRate
+            char *cr_str = "CR_UNDEFINED";
+            switch(p->coderate) {
+                case CR_LORA_4_5: cr_str = "CR_4_5"; break;
+                case CR_LORA_4_6: cr_str = "CR_4_6"; break;
+                case CR_LORA_4_7: cr_str = "CR_4_7"; break;
+                case CR_LORA_4_8: cr_str = "CR_4_8"; break;
             }
 
-            /* end of log file line */
-            fputs("\"\n", log_file);
-            fflush(log_file);
-            ++pkt_in_log;
+            // 5. Map Spreading Factor
+            int sf_int = 0;
+            switch(p->datarate) {
+                case DR_LORA_SF7:  sf_int = 7; break;
+                case DR_LORA_SF8:  sf_int = 8; break;
+                case DR_LORA_SF9:  sf_int = 9; break;
+                case DR_LORA_SF10: sf_int = 10; break;
+                case DR_LORA_SF11: sf_int = 11; break;
+                case DR_LORA_SF12: sf_int = 12; break;
+            }
+
+
+/* --- NEW: PARSE MESSAGE TYPE (UPLINK vs DOWNLINK) --- */
+            // The first byte (p->payload[0]) contains the MHDR
+            // We shift right by 5 bits to get the 3-bit MType
+            //uint8_t m_type = (p->payload[0] >> 5) & 0x07;
+
+            char *direction_str = "UNKNOWN";
+            char *type_description = "Unknown";
+
+            switch(m_type) {
+                case 0: // 000
+                    direction_str = "UPLINK";
+                    type_description = "Join Request";
+                    break;
+                case 1: // 001
+                    direction_str = "DOWNLINK";
+                    type_description = "Join Accept";
+                    break;
+                case 2: // 010
+                    direction_str = "UPLINK";
+                    type_description = "Unconfirmed Data Up";
+                    break;
+                case 3: // 011
+                    direction_str = "DOWNLINK";
+                    type_description = "Unconfirmed Data Down";
+                    break;
+                case 4: // 100
+                    direction_str = "UPLINK";
+                    type_description = "Confirmed Data Up";
+                    break;
+                case 5: // 101
+                    direction_str = "DOWNLINK";
+                    type_description = "Confirmed Data Down";
+                    break;
+                case 6: // 110
+                    direction_str = "RFU";
+                    type_description = "Rejoin Request";
+                    break;
+                case 7: // 111
+                    direction_str = "PROPRIETARY";
+                    type_description = "Proprietary";
+                    break;
+            }
+            /* --- END NEW --- */
+
+/* --- OUTPUT TO SCREEN (STDOUT) --- */
+            printf("{\"timestamp\":\"%s\",\"phyPayload\":\"%s\",", time_str, b64_payload);
+            printf("\"mhdr\":{\"direction\":\"%s\",\"type\":\"%s\",\"mTypeID\":%d},",
+                   direction_str, type_description, m_type);
+
+            // Handle LoRa vs FSK Modulation in JSON
+            if (p->modulation == MOD_LORA) {
+                printf("\"txInfo\":{\"frequency\":%u,\"modulation\":{\"lora\":{\"bandwidth\":%d,\"spreadingFactor\":%d,\"codeRate\":\"%s\"}}},", 
+                       p->freq_hz, bw_hz, sf_int, cr_str);
+            } else if (p->modulation == MOD_FSK) {
+                printf("\"txInfo\":{\"frequency\":%u,\"modulation\":{\"fsk\":{\"bitrate\":%u}}},", 
+                       p->freq_hz, p->datarate);
+            }
+
+            printf("\"rxInfo\":{\"gatewayId\":\"%016llX\",\"uplinkId\":%u,\"rssi\":%d,\"snr\":%.1f,\"channel\":%u,\"rfChain\":%u,\"context\":\"AAAAAA==\",\"crcStatus\":\"%s\"}}\n", 
+                   (long long unsigned int)lgwm, p->count_us, (int)p->rssi, p->snr, p->if_chain, p->rf_chain, (p->status == STAT_CRC_OK) ? "CRC_OK" : "CRC_BAD");
+            fflush(stdout);
+
+            /* --- OUTPUT TO FILE (LOG_FILE) --- */
+            if (log_file != NULL) {
+                fprintf(log_file, "{\"timestamp\":\"%s\",\"phyPayload\":\"%s\",", time_str, b64_payload);
+                fprintf(log_file, "\"mhdr\":{\"direction\":\"%s\",\"type\":\"%s\",\"mTypeID\":%d},",
+                        direction_str, type_description, m_type);
+
+                // Handle LoRa vs FSK Modulation in JSON
+                if (p->modulation == MOD_LORA) {
+                    fprintf(log_file, "\"txInfo\":{\"frequency\":%u,\"modulation\":{\"lora\":{\"bandwidth\":%d,\"spreadingFactor\":%d,\"codeRate\":\"%s\"}}},", 
+                           p->freq_hz, bw_hz, sf_int, cr_str);
+                } else if (p->modulation == MOD_FSK) {
+                    fprintf(log_file, "\"txInfo\":{\"frequency\":%u,\"modulation\":{\"fsk\":{\"bitrate\":%u}}},", 
+                           p->freq_hz, p->datarate);
+                }
+
+                fprintf(log_file, "\"rxInfo\":{\"gatewayId\":\"%016llX\",\"uplinkId\":%u,\"rssi\":%d,\"snr\":%.1f,\"channel\":%u,\"rfChain\":%u,\"context\":\"AAAAAA==\",\"crcStatus\":\"%s\"}}\n", 
+                       (long long unsigned int)lgwm, p->count_us, (int)p->rssi, p->snr, p->if_chain, p->rf_chain, (p->status == STAT_CRC_OK) ? "CRC_OK" : "CRC_BAD");
+                fflush(log_file);
+                ++pkt_in_log;
+            }
+
         }
 
         /* check time and rotate log file if necessary */
